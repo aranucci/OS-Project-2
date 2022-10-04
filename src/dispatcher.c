@@ -2,10 +2,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <errno.h>
 
 #include "dispatcher.h"
 #include "shell_builtins.h"
 #include "parser.h"
+
+static int finish_external_command(struct command *pipeline) 
+{
+
+	pid_t pid = fork();
+	int waitStatus;
+
+	if (pid == 0) {
+		int returnStatus = execvp(pipeline->argv[0], pipeline->argv);
+		if (returnStatus != 0) {
+			if (errno == EACCES)
+				fprintf(stderr, "Permission denied: %s\n", pipeline->argv[0]);
+			else if (errno == ENOENT)
+				fprintf(stderr, "Command not found: %s\n", pipeline->argv[0]);
+			else if (errno == E2BIG)
+				fprintf(stderr, "Command input is too big\n");
+			else if (errno == ENOENT)
+				fprintf(stderr, "Error opening process files: \n");
+			else
+				fprintf(stderr, "An error occurred processing command: %s\n", pipeline->argv[0]);
+		}
+		exit(returnStatus);
+		return -1;
+	} else {
+		waitpid(pid, &waitStatus, 0);
+		return waitStatus;
+	}
+}
 
 /**
  * dispatch_external_command() - run a pipeline of commands
@@ -50,8 +82,7 @@ static int dispatch_external_command(struct command *pipeline)
 	 *
 	 * Good luck!
 	 */
-	fprintf(stderr, "TODO: handle external commands\n");
-	return -1;
+	return finish_external_command(pipeline);
 }
 
 /**
