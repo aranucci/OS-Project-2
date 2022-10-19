@@ -6,18 +6,51 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
-
+#include <sys/stat.h>
+#include <fcntl.h>
 #include "dispatcher.h"
 #include "shell_builtins.h"
 #include "parser.h"
 
-static int finish_external_command(struct command *pipeline) 
+static int finish_external_command(struct command *pipeline, int fd) 
 {
+	int output_fd = STDOUT_FILENO;
+	int fd_ar[2];
 
+	if (pipeline->output_type == COMMAND_OUTPUT_STDOUT) {
+		output_fd = STDOUT_FILENO;
+	} else if (pipeline->output_type == COMMAND_OUTPUT_FILE_TRUNCATE) {
+		output_fd = open(pipeline->output_filename, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	} else if (pipeline->output_type == COMMAND_OUTPUT_FILE_APPEND) {
+		output_fd = open(pipeline->output_filename, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	} else if (pipeline->output_type == COMMAND_OUTPUT_PIPE) {
+		if (pipe(fd_ar)){
+			fprintf(stderr, "Error with pipe\n");
+			return 1;
+		} 
+		output_fd = fd_ar[1];
+	}
+
+	// if output_fd is <0, we failed opening the output file
+	if (output_fd < 0) {
+		fprintf(stderr, "could not open file.\n");
+		return -1;
+	}
+	
 	pid_t pid = fork();
 	int waitStatus;
 
 	if (pid == 0) {
+
+		if (fd != STDIN_FILENO) {
+			dup2(fd, STDIN_FILENO);
+			close(fd);
+		}
+		if (output_fd != STDOUT_FILENO) {
+			dup2(output_fd, STDOUT_FILENO);
+			close(output_fd);
+		}
+
 		int returnStatus = execvp(pipeline->argv[0], pipeline->argv);
 		if (returnStatus != 0) {
 			if (errno == EACCES)
@@ -34,6 +67,17 @@ static int finish_external_command(struct command *pipeline)
 		exit(returnStatus);
 		return -1;
 	} else {
+
+		if (output_fd != STDOUT_FILENO) {
+			close(output_fd);
+		}
+
+		if (pipeline->output_type == COMMAND_OUTPUT_PIPE) {
+			waitStatus = finish_external_command(pipeline->pipe_to, fd_ar[0]);
+			if(waitStatus != 0) {
+				return waitStatus;
+			}
+		}
 		waitpid(pid, &waitStatus, 0);
 		return waitStatus;
 	}
@@ -82,7 +126,21 @@ static int dispatch_external_command(struct command *pipeline)
 	 *
 	 * Good luck!
 	 */
-	return finish_external_command(pipeline);
+
+	int input_fd = STDIN_FILENO;
+
+	if (pipeline->input_filename == NULL) {
+		input_fd = STDIN_FILENO;
+	} else {
+		input_fd = open(pipeline->input_filename, O_RDONLY);
+		// check if fd < 0, then file failed to open
+		if (input_fd < 0) {
+			fprintf(stderr, "could not open file.\n");
+			return -1;
+		}
+	}
+
+	return finish_external_command(pipeline, input_fd);
 }
 
 /**
